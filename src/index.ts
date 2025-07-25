@@ -62,7 +62,7 @@ export const Config: Schema<Config> = Schema.object({
       .default('结束嘞 o_o ....')
       .description('已结束比赛的显示文本')
   })
-  .description('比赛状态显示文本配置')
+    .description('比赛状态显示文本配置')
 })
 
 // Contest 接口，统一各个平台比赛的相关数据
@@ -134,7 +134,35 @@ function processContests(contests: Contest[], options: any, config: Config): Con
 
   // 平台筛选（-p 参数）
   if (options.platform) {
-    processed = processed.filter(c => c.platform === options.platform);
+    // 输入的参数转换为小写（不区分是对的）
+    const inputPlatform = options.platform.toLowerCase();
+
+    // 查找匹配的别名 / 正式名称
+    let matchedPlatform = null;
+    for (const [alias, platform] of Object.entries(config.platformAliases)) {
+      if (alias.toLowerCase() === inputPlatform) {
+        matchedPlatform = platform;
+        break;
+      }
+    }
+
+    // 否则尝试直接匹配正式名称
+    if (!matchedPlatform) {
+      for (const platform of Object.values(config.platformAliases)) {
+        if (platform.toLowerCase() === inputPlatform) {
+          matchedPlatform = platform;
+          break;
+        }
+      }
+    }
+
+    // 如果找到匹配的平台名称
+    if (matchedPlatform) {
+      processed = processed.filter(c => c.platform === matchedPlatform);
+    } else {
+      // 如果没有匹配的平台，返回空数组表示找不到
+      return [];
+    }
   }
 
   // 比赛阶段筛选（-s 参数）
@@ -252,7 +280,7 @@ async function getCodeforcesContests(ctx: Context): Promise<Contest[]> {
 }
 
 // SubFunc:: 获取 Atcoder 比赛，利用 cheerio 爬取网站（无官方 API）
-// ai 写的，我不会爬虫
+// 纯 ai 写的，我不会用 cheerio
 async function getAtcoderContests(ctx: Context): Promise<Contest[]> {
   try {
     // 获取AtCoder比赛页面HTML
@@ -356,3 +384,4 @@ async function getLuoguContests(ctx: Context): Promise<Contest[]> {
 }
 
 // ai 改的代码比我写的 bug 还多，sad
+// 但是 ai 变量名起的比我起的正经多了，至少不是abcdefg
