@@ -5,7 +5,14 @@ export const name = 'coding-contests'
 
 export interface Config {
   maxContests: number,
-  startSearchFrom: number
+  startSearchFrom: number,
+  greetings: string[],
+  platformAliases: Record<string, string>,
+  statusText: {
+    upcoming: string,
+    coding: string,
+    ended: string
+  }
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -13,11 +20,49 @@ export const Config: Schema<Config> = Schema.object({
     .min(1).max(15)
     .default(5)
     .description('默认返回比赛数量'),
-    
+
   startSearchFrom: Schema.number()
     .min(-7).max(15)
     .default(2)
-    .description('筛选从（  ）天前存在的比赛，可以取负数表示搜索从（  ）天后开始的比赛。这个值会影响到 -s finished 的查找范围'),
+    .description('筛选从（  ）天前存在的比赛，可以取负数表示搜索从（  ）天后开始的比赛。这个值会影响到 -s ended 的查找范围'),
+
+  greetings: Schema.array(String)
+    .default([
+      '还在打OI哦，休息一下吧 ♪(´▽｀)',
+      '今日宜：AK',
+      'ο(=•ω＜=)ρ⌒☆',
+      '想打比赛吗？那就来吧！(o゜▽゜)o☆',
+      '今天你开long long了吗 ( •̀ ω •́ )',
+      '唉你们OIer好可怕 O_O',
+    ])
+    .description('自定义问候语列表，每次随机选择一条显示在结果顶部'),
+
+  platformAliases: Schema.dict(String)
+    .default({
+      'codeforces': 'Codeforces',
+      'cf': 'Codeforces',
+      'atcoder': 'AtCoder',
+      'at': 'AtCoder',
+      'ac': 'AtCoder',
+      'lg': 'Luogu',
+      '洛谷': 'Luogu',
+      'luogu': 'Luogu'
+    })
+    .description('平台别名设置，键是别名，值是对应的平台名称（区分大小写）')
+    .role('table'),
+
+  statusText: Schema.object({
+    upcoming: Schema.string()
+      .default('还没开始 (●\' - \'●)')
+      .description('未开始比赛的显示文本'),
+    coding: Schema.string()
+      .default('正在火热进行 OwO')
+      .description('进行中比赛的显示文本'),
+    ended: Schema.string()
+      .default('结束嘞 o_o ....')
+      .description('已结束比赛的显示文本')
+  })
+  .description('比赛状态显示文本配置')
 })
 
 // Contest 接口，统一各个平台比赛的相关数据
@@ -30,32 +75,11 @@ interface Contest {
   platform?: string;      // 比赛平台（Optional）
 }
 
-// 别名设置（输入指令时可以简化输入）
-const PLATFORM_ALIASES = {
-  'codeforces': 'Codeforces',
-  'cf': 'Codeforces',
-
-  'atcoder': 'AtCoder',
-  'at': 'AtCoder',
-  'ac': 'AtCoder',
-
-  'lg': 'Luogu',
-  '洛谷': 'Luogu',
-  'luogu': 'Luogu'
-};
-
-// nonsense，随意修改
-const STATUS_TEXT = {
-  'before': '还没开始 (●\' - \'●)',
-  'coding': '正在火热进行 OwO',
-  'finished': '结束嘞 o_o ....'
-};
-
 // 主函数部分
 export function apply(ctx: Context, config: Config) {
   ctx.command('oi', '获取最近的 OI 线上赛事的日程')
     .option('platform', '-p <platform> 筛选比赛平台 (比如: "cf", "atcoder", "luogu" 等参数，目前也仅支持查找这些比赛)')
-    .option('phase', '-s <phase> 筛选比赛阶段 (支持 "before", "coding", "finished" 三种参数)')
+    .option('phase', '-s <phase> 筛选比赛阶段 (支持 "upcoming", "coding", "ended" 三种参数)')
     .option('count', '-n <count> 限制一次性输出的比赛总数')
     .action(async ({ session, options }) => {
       try {
@@ -71,7 +95,7 @@ export function apply(ctx: Context, config: Config) {
         }
 
         // 格式化输出结果
-        return generateOutput(processed);
+        return generateOutput(processed, config);
       }
       catch (error) {
         console.error('Error occurs when fetching contests :(', error);
@@ -101,7 +125,7 @@ async function fetchContests(ctx: Context, config: Config): Promise<Contest[]> {
   const dayStart = Math.floor(Date.now() / 1000) - config.startSearchFrom * 86400;
 
   return allContests.filter(contest => contest.startTime + contest.duration >= dayStart);
-} 
+}
 
 
 // Func: 根据 option 筛选并排序获得的比赛数据
@@ -110,10 +134,7 @@ function processContests(contests: Contest[], options: any, config: Config): Con
 
   // 平台筛选（-p 参数）
   if (options.platform) {
-    const platformName = PLATFORM_ALIASES[options.platform.toLowerCase()];
-    if (platformName) {
-      processed = processed.filter(c => c.platform === platformName);
-    }
+    processed = processed.filter(c => c.platform === options.platform);
   }
 
   // 比赛阶段筛选（-s 参数）
@@ -131,8 +152,8 @@ function processContests(contests: Contest[], options: any, config: Config): Con
     if (a.phase.includes('coding')) return -1;
     if (b.phase.includes('coding')) return 1;
     // 已结束的比赛靠后
-    if (a.phase.includes('finished')) return 1;
-    if (b.phase.includes('finished')) return -1;
+    if (a.phase.includes('ended')) return 1;
+    if (b.phase.includes('ended')) return -1;
     return 0;
   });
 
@@ -141,18 +162,15 @@ function processContests(contests: Contest[], options: any, config: Config): Con
 }
 
 // 构造比赛信息
-function generateOutput(contests: Contest[]): string {
-  // 返回信息的第一句话从下面的列表里随机抽取（嗯趣味性的）
-  const GREETINGS = [
-    '还在打OI哦，休息一下吧 ♪(´▽｀)',
-    '今日宜：AK',
-    'ο(=•ω＜=)ρ⌒☆',
-    '想打比赛吗？那就来吧！(o゜▽゜)o☆',
-    '今天你开long long了吗 ( •̀ ω •́ )',
-    '唉你们OIer好可怕 O_O',
-  ];
-  // 返回信息 output
-  let output = GREETINGS[Math.floor(Math.random() * GREETINGS.length)] + '\n-------------\n';
+function generateOutput(contests: Contest[], config: Config): string {
+  // 使用配置中的状态文本，如果未配置则使用默认值
+  const statusTexts = config.statusText || {
+    upcoming: '还没开始 (●\' - \'●)',
+    coding: '正在火热进行 OwO',
+    ended: '结束嘞 o_o ....'
+  };
+
+  let output = config.greetings[Math.floor(Math.random() * config.greetings.length)] + '\n-------------\n';
 
   contests.forEach(contest => {
     output += `比赛平台: ${contest.platform}\n`;
@@ -168,12 +186,17 @@ function generateOutput(contests: Contest[]): string {
       output += `比赛时长: ${duration.toFixed(0)}min\n`;
     }
 
-    // 根据比赛阶段获取状态文本
-    const status = Object.entries(STATUS_TEXT).find(([key]) =>
-      contest.phase.includes(key)
-    )?.[1] || '';
+    // 根据比赛阶段获取状态文本（使用新的状态键名）
+    let status = '';
+    if (contest.phase.includes('upcoming')) {
+      status = statusTexts.upcoming;
+    } else if (contest.phase.includes('ongoing')) {
+      status = statusTexts.coding;
+    } else if (contest.phase.includes('ended')) {
+      status = statusTexts.ended;
+    }
 
-    output += `当前比赛状态: ${status}\n`;
+    output += `比赛状态: ${status}\n`;
 
     if (contest.url) {
       output += `直达赛场: ${contest.url}\n`;
@@ -210,8 +233,8 @@ async function getCodeforcesContests(ctx: Context): Promise<Contest[]> {
       const startTime = contest.startTimeSeconds;
       const endTime = startTime + contest.durationSeconds;
 
-      let phase = 'before';
-      if (now > endTime) phase = 'finished';
+      let phase = 'upcoming';
+      if (now > endTime) phase = 'ended';
       else if (now > startTime) phase = 'coding';
 
       return {
@@ -266,11 +289,11 @@ async function getAtcoderContests(ctx: Context): Promise<Contest[]> {
       // 统一判断比赛阶段
       let phase: string;
       if (now < startTime) {
-        phase = 'before';
+        phase = 'upcoming';
       } else if (now < endTime) {
         phase = 'coding';
       } else {
-        phase = 'finished';
+        phase = 'ended';
       }
 
       contests.push({
@@ -314,8 +337,8 @@ async function getLuoguContests(ctx: Context): Promise<Contest[]> {
       const endTime = contest.endTime;
 
       // 根据当前时间确定比赛阶段
-      let phase = 'before';
-      if (now > endTime) phase = 'finished';
+      let phase = 'upcoming';
+      if (now > endTime) phase = 'ended';
       else if (now > startTime) phase = 'coding';
 
       return {
