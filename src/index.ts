@@ -4,8 +4,9 @@ import * as cheerio from 'cheerio';
 export const name = 'coding-contests'
 
 export interface Config {
-  maxContests: number,
+  defaultMaxContests: number,
   startSearchFrom: number,
+  timeout: number,
   greetings: string[],
   platformAliases: Record<string, string>,
   statusText: {
@@ -16,15 +17,21 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  maxContests: Schema.number()
-    .min(1).max(15)
+  defaultMaxContests: Schema.number()
+    .min(1).max(30)
     .default(5)
     .description('默认返回比赛数量'),
 
   startSearchFrom: Schema.number()
-    .min(-7).max(15)
+    .min(-15).max(15)
     .default(2)
-    .description('筛选从（  ）天前存在的比赛，可以取负数表示搜索从（  ）天后开始的比赛。这个值会影响到 -s ended 的查找范围'),
+    .description('从（  ）天前存在的比赛开始查询（不查询太过久远的比赛），可以取非正数。这个值会影响到 -s ended 的查找范围'),
+
+
+  timeout: Schema.number()
+    .min(1000).max(60000)
+    .default(10000)
+    .description('比赛数据请求超时阈值（单位毫秒）'),
 
   greetings: Schema.array(String)
     .default([
@@ -35,7 +42,7 @@ export const Config: Schema<Config> = Schema.object({
       '今天你开long long了吗 ( •̀ ω •́ )',
       '唉你们OIer好可怕 O_O',
     ])
-    .description('自定义问候语列表，每次随机选择一条显示在结果顶部'),
+    .description('自定义问候语列表，每次随机选择一条显示在查询结果顶部'),
 
   platformAliases: Schema.dict(String)
     .default({
@@ -46,9 +53,13 @@ export const Config: Schema<Config> = Schema.object({
       'ac': 'AtCoder',
       'lg': 'Luogu',
       '洛谷': 'Luogu',
-      'luogu': 'Luogu'
+      'luogu': 'Luogu',
+      'lc': 'LeetCode',
+      'leetcode': 'LeetCode',
+      '力扣': 'LeetCode',
+
     })
-    .description('平台别名设置，键是别名，值是对应的平台名称（区分大小写）')
+    .description('平台别名设置，在指定 -p 参数时可简化平台名称输入')
     .role('table'),
 
   statusText: Schema.object({
@@ -62,7 +73,7 @@ export const Config: Schema<Config> = Schema.object({
       .default('结束嘞 o_o ....')
       .description('已结束比赛的显示文本')
   })
-    .description('比赛状态显示文本配置')
+    .description('比赛状态显示文本')
 })
 
 // Contest 接口，统一各个平台比赛的相关数据
@@ -77,10 +88,15 @@ interface Contest {
 
 // 主函数部分
 export function apply(ctx: Context, config: Config) {
-  ctx.command('oi', '获取最近的 OI 线上赛事的日程')
-    .option('platform', '-p <platform> 筛选比赛平台 (比如: "cf", "atcoder", "luogu" 等参数，目前也仅支持查找这些比赛)')
+  ctx.command('oi', '获取近期的 OI 线上赛事的日程')
+    .usage('查询近期的 OI 线上赛事，支持多种筛选条件')
+    .example('查询近期所有比赛（默认）：\n  oi')
+    .example('查询在今天举办的，已经结束的所有比赛：\n  oi -d today -s ended')
+    .example('查询 2025 年 1 月 1 日在 Codeforces 举办的比赛，只输出在查询时刻尚未开始的前 3 场比赛：\n  oi -p cf -d 2025-01-01 -s upcoming -n 3')
+    .option('platform', '-p <platform> 筛选比赛平台，可用字段参见 platformAliases 设置')
     .option('phase', '-s <phase> 筛选比赛阶段 (支持 "upcoming", "coding", "ended" 三种参数)')
     .option('count', '-n <count> 限制一次性输出的比赛总数')
+    .option('date', '-d <date> 查询最近指定日期的比赛（格式：YYYY-MM-DD，比如 2025-01-01，只能输入最近的日期）')
     .action(async ({ session, options }) => {
       try {
 
@@ -108,17 +124,19 @@ export function apply(ctx: Context, config: Config) {
 // get_____Contests 子函数获得的比赛信息在这里进行处理与标签
 async function fetchContests(ctx: Context, config: Config): Promise<Contest[]> {
   // 获取各平台比赛信息
-  const [cfContests, atcoderContests, luoguContests] = await Promise.all([
-    getCodeforcesContests(ctx),
-    getAtcoderContests(ctx),
-    getLuoguContests(ctx)
+  const [cfContests, atcoderContests, luoguContests, leetcodeContests] = await Promise.all([
+    getCodeforcesContests(ctx, config),
+    getAtcoderContests(ctx, config),
+    getLuoguContests(ctx, config),
+    getLeetCodeContests(ctx, config),
   ]);
 
   // 合并同类项，标记比赛来源方便后期筛选
   const allContests = [
     ...cfContests.map(c => ({ ...c, platform: 'Codeforces' })),
     ...atcoderContests.map(c => ({ ...c, platform: 'AtCoder' })),
-    ...luoguContests.map(c => ({ ...c, platform: 'Luogu' }))
+    ...luoguContests.map(c => ({ ...c, platform: 'Luogu' })),
+    ...leetcodeContests.map(c => ({ ...c, platform: 'LeetCode' }))
   ];
 
   // 筛选从 x 天前存在的比赛（太久远的比赛不显示）
@@ -172,6 +190,37 @@ function processContests(contests: Contest[], options: any, config: Config): Con
     );
   }
 
+  // 日期筛选（-d 参数）
+  if (options.date) {
+    let targetDate: Date | null = null;
+    try {
+      if (options.date.toLowerCase() === 'today') {
+        targetDate = new Date();
+      } else {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (dateRegex.test(options.date)) {
+          targetDate = new Date(options.date);
+          if (isNaN(targetDate.getTime())) {
+            targetDate = null;
+          }
+        }
+      }
+      if (targetDate) {
+        processed = processed.filter(contest => {
+          if (!contest.startTime) return false;
+          const contestDate = new Date(contest.startTime * 1000);
+          return (
+            contestDate.getFullYear() === targetDate.getFullYear() &&
+            contestDate.getMonth() === targetDate.getMonth() &&
+            contestDate.getDate() === targetDate.getDate()
+          );
+        });
+      }
+    } catch (e) {
+      console.log('Invalid date format! -d option ignored!');
+    }
+  }
+
   // 按时间和状态排序
   processed.sort((a, b) => {
     // 按开始时间排序
@@ -186,7 +235,7 @@ function processContests(contests: Contest[], options: any, config: Config): Con
   });
 
   // 数量筛选（-n 参数）
-  return processed.slice(0, options.count || config.maxContests);
+  return processed.slice(0, options.count || config.defaultMaxContests);
 }
 
 // 构造比赛信息
@@ -236,13 +285,13 @@ function generateOutput(contests: Contest[], config: Config): string {
   return output;
 }
 
-// SubFunc:: 获取 Codeforces 比赛，通过 API 获取
-async function getCodeforcesContests(ctx: Context): Promise<Contest[]> {
+// SubFunc: 获取 Codeforces 比赛，通过 API 获取
+async function getCodeforcesContests(ctx: Context, config: Config): Promise<Contest[]> {
   try {
     // 请求Codeforces API获取比赛列表
     const response = await ctx.http.get('https://codeforces.com/api/contest.list', {
       params: { gym: false },
-      timeout: 10000,
+      timeout: config.timeout,
       headers: {
         'User-Agent': 'Mozilla/5.0',
         'Accept': 'application/json'
@@ -279,13 +328,13 @@ async function getCodeforcesContests(ctx: Context): Promise<Contest[]> {
   }
 }
 
-// SubFunc:: 获取 Atcoder 比赛，利用 cheerio 爬取网站（无官方 API）
+// SubFunc: 获取 Atcoder 比赛，利用 cheerio 爬取网站（无官方 API）
 // 纯 ai 写的，我不会用 cheerio
-async function getAtcoderContests(ctx: Context): Promise<Contest[]> {
+async function getAtcoderContests(ctx: Context, config: Config): Promise<Contest[]> {
   try {
     // 获取AtCoder比赛页面HTML
     const html = await ctx.http.get('https://atcoder.jp/contests', {
-      timeout: 10000,
+      timeout: config.timeout,
       headers: {
         'User-Agent': 'Mozilla/5.0'
       }
@@ -341,10 +390,10 @@ async function getAtcoderContests(ctx: Context): Promise<Contest[]> {
 }
 
 // SubFunc: 获取 Luogu 比赛，利用 API 获取
-async function getLuoguContests(ctx: Context): Promise<Contest[]> {
+async function getLuoguContests(ctx: Context, config: Config): Promise<Contest[]> {
   try {
     const response = await ctx.http.get('https://www.luogu.com.cn/contest/list?_contentOnly=1', {
-      timeout: 10000,
+      timeout: config.timeout,
       headers: {
         'User-Agent': 'Mozilla/5.0',
         'X-Requested-With': 'XMLHttpRequest',
@@ -379,6 +428,69 @@ async function getLuoguContests(ctx: Context): Promise<Contest[]> {
     });
   } catch (error) {
     console.error('Error occurs when fetching Luogu contests :(', error);
+    return [];
+  }
+}
+
+// SubFunc: 获取 LeetCode 比赛，使用官方 API
+async function getLeetCodeContests(ctx: Context, config: Config): Promise<Contest[]> {
+  try {
+    const response = await ctx.http.post('https://leetcode.com/graphql', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0'
+      },
+      data: JSON.stringify({
+        query: `{
+          allContests {
+            title
+            startTime
+            duration
+            isActive
+            isPast
+          }
+          currentTimestamp
+        }`
+      }),
+      timeout: config.timeout,
+    });
+
+    if (!response?.data?.allContests) {
+      console.error('LeetCode API 返回数据结构不符', response);
+      return [];
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const contests: Contest[] = [];
+
+    response.data.allContests.forEach(contest => {
+      const startTime = contest.startTime;
+      const endTime = startTime + contest.duration;
+
+      let phase = 'upcoming';
+      if (contest.isPast) {
+        phase = 'ended';
+      } else if (contest.isActive) {
+        phase = 'coding';
+      } else {
+        // LeetCode 自带的状态字段与下面的手动计算进行二次验证
+        if (now > endTime) phase = 'ended';
+        else if (now > startTime) phase = 'coding';
+      }
+
+      contests.push({
+        name: contest.title,
+        startTime,
+        duration: contest.duration,
+        phase,
+        url: `https://leetcode.com/contest/${contest.title.toLowerCase().replace(/\s+/g, '-')}`
+      });
+    });
+
+    return contests;
+  } catch (error) {
+    console.error('Error occurs when fetching LeetCode contests :(', error);
     return [];
   }
 }
