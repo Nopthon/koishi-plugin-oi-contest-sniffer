@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-oi-contest-sniffer",
   "description": "A Koishi plugin that can collect recent OI contests",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
