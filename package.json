@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-oi-contest-sniffer",
   "description": "A Koishi plugin that can collect recent OI contests",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -29,7 +29,7 @@
   "koishi": {
     "description": {
       "en": "Collects recent OI contests",
-      "zh": "【自用 频繁更新】收集近期的 OI 线上赛事，目前支持Codeforces AtCoder Luogu平台"
+      "zh": "【自用 已停止更新】收集近期的 OI 线上赛事，目前支持Codeforces AtCoder Luogu平台"
     },
     "preview": "true"
   },
