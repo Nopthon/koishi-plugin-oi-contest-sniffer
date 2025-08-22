@@ -24,8 +24,8 @@ export const Config: Schema<Config> = Schema.object({
 
   startSearchFrom: Schema.number()
     .min(-15).max(15)
-    .default(2)
-    .description('从（  ）天前存在的比赛开始查询（不查询太过久远的比赛），可以取非正数。这个值会影响到 -s ended 的查找范围'),
+    .default(0)
+    .description('从（  ）天前存在的比赛开始查询（不查询太过久远的比赛），可以取非正数。比如取 0 表示只查询未结束的比赛'),
 
 
   timeout: Schema.number()
@@ -53,9 +53,7 @@ export const Config: Schema<Config> = Schema.object({
       'ac': 'AtCoder',
       'lg': 'Luogu',
       '洛谷': 'Luogu',
-      'luogu': 'Luogu',
-      'LeetCode': 'obsolete_do_not_use_it'
-
+      'luogu': 'Luogu'
     })
     .description('平台别名设置，在指定 -p 参数时可简化平台名称输入')
     .role('table'),
@@ -96,6 +94,7 @@ export function apply(ctx: Context, config: Config) {
     .option('count', '-n <count> 限制一次性输出的比赛总数')
     .option('date', '-d <date> 查询最近指定日期的比赛（格式：YYYY-MM-DD，比如 2025-01-01，只能输入最近的日期）')
     .action(async ({ session, options }) => {
+      // try-catch 太 ai 了，不过 ai 说的道理
       try {
 
         // 获取所有比赛数据
@@ -431,5 +430,4 @@ async function getLuoguContests(ctx: Context, config: Config): Promise<Contest[]
 // SubFunc: 获取 LeetCode 国内站比赛，使用官方 API
 // LeetCode 爬取信息需要cookie，并且大多时候只有固定的单周赛与双周赛，所以删了
 
-// ai 改的代码比我写的 bug 还多，sad
-// 但是 ai 变量名起的比我起的正经多了，至少不是abcdefg
+// 话说 ai 为啥这么喜欢 try-catch
